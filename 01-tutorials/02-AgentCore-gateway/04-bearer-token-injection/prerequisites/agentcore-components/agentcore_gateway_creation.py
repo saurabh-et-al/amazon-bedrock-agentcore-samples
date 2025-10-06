@@ -1,49 +1,56 @@
-# Import libraries
-from strands import Agent
-from strands.models import BedrockModel
-from strands.tools.mcp import MCPClient
+"""
+AgentCore Gateway Creation Module.
+
+This module handles the creation and configuration of AWS Bedrock AgentCore gateways
+for Asana integration, including target configuration and credential management.
+"""
+
+import json
 import os
 import sys
+
 import boto3
-import json
-from bedrock_agentcore.identity.auth import requires_access_token
-from mcp.client.streamable_http import streamablehttp_client
-import requests
 
+from utils import get_ssm_parameter, put_ssm_parameter
 
-from utils import get_ssm_parameter, put_ssm_parameter, load_api_spec, get_cognito_client_secret
-
-sts_client = boto3.client('sts')
+STS_CLIENT = boto3.client('sts')
 
 # Get AWS account details
 REGION = boto3.session.Session().region_name
 
-gateway_client = boto3.client(
+GATEWAY_CLIENT = boto3.client(
     "bedrock-agentcore-control",
     region_name=REGION,
 )
 
 print("✅ Fetching AgentCore gateway!")
 
-gateway_name = "agentcore-gw-asana-integration"
+GATEWAY_NAME = "agentcore-gw-asana-integration"
 
 def create_agentcore_gateway():
+    """Create or retrieve existing AgentCore gateway.
+    
+    Returns:
+        Dictionary containing gateway information (id, name, url, arn)
+    """
     auth_config = {
         "customJWTAuthorizer": {
             "allowedClients": [
                 get_ssm_parameter("/app/asana/demo/agentcoregwy/machine_client_id")
             ],
-            "discoveryUrl": get_ssm_parameter("/app/asana/demo/agentcoregwy/cognito_discovery_url")
+            "discoveryUrl": get_ssm_parameter(
+                "/app/asana/demo/agentcoregwy/cognito_discovery_url"
+            )
         }
     }
 
     try:
         # create new gateway
-        print(f"Creating gateway in region {REGION} with name: {gateway_name}")
+        print(f"Creating gateway in region {REGION} with name: {GATEWAY_NAME}")
 
-        create_response = gateway_client.create_gateway(
-            name=gateway_name,
-            roleArn= get_ssm_parameter("/app/asana/demo/agentcoregwy/gateway_iam_role"),
+        create_response = GATEWAY_CLIENT.create_gateway(
+            name=GATEWAY_NAME,
+            roleArn=get_ssm_parameter("/app/asana/demo/agentcoregwy/gateway_iam_role"),
             protocolType="MCP",
             authorizerType="CUSTOM_JWT",
             authorizerConfiguration=auth_config,
@@ -52,9 +59,9 @@ def create_agentcore_gateway():
 
         gateway_id = create_response["gatewayId"]
 
-        gateway = {
+        gateway_info = {
             "id": gateway_id,
-            "name": gateway_name,
+            "name": GATEWAY_NAME,
             "gateway_url": create_response["gatewayUrl"],
             "gateway_arn": create_response["gatewayArn"],
         }
@@ -62,35 +69,52 @@ def create_agentcore_gateway():
 
         print(f"✅ Gateway created successfully with ID: {gateway_id}")
 
-        return gateway
+        return gateway_info
 
-    except Exception as e:
+    except (GATEWAY_CLIENT.exceptions.ConflictException,
+            GATEWAY_CLIENT.exceptions.ValidationException) as exc:
         # If gateway exists, collect existing gateway ID from SSM
+        print(f"Gateway creation failed: {exc}")
         existing_gateway_id = get_ssm_parameter("/app/asana/demo/agentcoregwy/gateway_id")
         print(f"Found existing gateway with ID: {existing_gateway_id}")
-        
+
         # Get existing gateway details
-        gateway_response = gateway_client.get_gateway(gatewayIdentifier=existing_gateway_id)
-        gateway = {
+        gateway_response = GATEWAY_CLIENT.get_gateway(
+            gatewayIdentifier=existing_gateway_id
+        )
+        gateway_info = {
             "id": existing_gateway_id,
             "name": gateway_response["name"],
             "gateway_url": gateway_response["gatewayUrl"],
             "gateway_arn": gateway_response["gatewayArn"],
         }
-        gateway_id = gateway['id']
-        return gateway
-
-# gateway_id = create_agentcore_gateway()
+        return gateway_info
 
 def load_api_spec(file_path: str) -> list:
-    with open(file_path, "r") as f:
-        data = json.load(f)
+    """Load API specification from JSON file.
+    
+    Args:
+        file_path: Path to the JSON file containing API specification
         
+    Returns:
+        List containing the API specification data
+        
+    Raises:
+        ValueError: If the JSON file doesn't contain a list
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
     if not isinstance(data, list):
         raise ValueError("Expected a list in the JSON file")
     return data
 
 def add_gateway_target(gateway_id):
+    """Add gateway target with API specification and credential configuration.
+    
+    Args:
+        gateway_id: ID of the gateway to add target to
+    """
     try:
         api_spec_file = "../openapi-spec/openapi_simple.json"
 
@@ -102,13 +126,13 @@ def add_gateway_target(gateway_id):
         api_spec = load_api_spec(api_spec_file)
         print(f"✅ Loaded API specification file: {api_spec}")
 
-
-        api_gateway_url = get_ssm_parameter("/app/asana/demo/agentcoregwy/apigateway_url")
+        api_gateway_url = get_ssm_parameter(
+            "/app/asana/demo/agentcoregwy/apigateway_url"
+        )
 
         api_spec[0]["servers"][0]["url"] = api_gateway_url
 
         print(f"✅ Replaced API Gateway URL: {api_gateway_url}")
-
 
         print("✅ Creating credential provider...")
         acps = boto3.client(service_name="bedrock-agentcore-control")
@@ -118,31 +142,36 @@ def add_gateway_target(gateway_id):
         existing_credential_provider_response = acps.get_api_key_credential_provider(
             name=credential_provider_name
         )
-        print(f"Found existing credential provider with ARN: {existing_credential_provider_response['credentialProviderArn']}")
+        provider_arn = existing_credential_provider_response['credentialProviderArn']
+        print(f"Found existing credential provider with ARN: {provider_arn}")
 
-        if existing_credential_provider_response['credentialProviderArn'] is None:
-            print(f"❌ Credential provider not found, creating new: {credential_provider_name}")
-            response=acps.create_api_key_credential_provider(
+        if provider_arn is None:
+            print(f"❌ Credential provider not found, creating new: "
+                  f"{credential_provider_name}")
+            response = acps.create_api_key_credential_provider(
                 name=credential_provider_name,
                 apiKey=get_ssm_parameter("/app/asana/demo/agentcoregwy/api_key")
             )
 
             print(response)
-            credentialProviderARN = response['credentialProviderArn']
-            print(f"Outbound Credentials provider ARN, {credentialProviderARN}")
+            credential_provider_arn = response['credentialProviderArn']
+            print(f"Outbound Credentials provider ARN, {credential_provider_arn}")
         else:
-            credentialProviderARN = existing_credential_provider_response['credentialProviderArn']
-        
+            credential_provider_arn = provider_arn
+
         # API Key credentials provider configuration
         api_key_credential_config = [
             {
-                "credentialProviderType" : "API_KEY", 
+                "credentialProviderType": "API_KEY",
                 "credentialProvider": {
                     "apiKeyCredentialProvider": {
-                            "credentialParameterName": "api_key", # Replace this with the name of the api key name expected by the respective API provider. For passing token in the header, use "Authorization"
-                            "providerArn": credentialProviderARN,
-                            "credentialLocation":"QUERY_PARAMETER", # Location of api key. Possible values are "HEADER" and "QUERY_PARAMETER".
-                            #"credentialPrefix": " " # Prefix for the token. Valid values are "Basic". Applies only for tokens.
+                        # Replace with the api key name expected by the API provider
+                        # For passing token in the header, use "Authorization"
+                        "credentialParameterName": "api_key",
+                        "providerArn": credential_provider_arn,
+                        # Location of api key. Values: "HEADER" or "QUERY_PARAMETER"
+                        "credentialLocation": "QUERY_PARAMETER",
+                        # "credentialPrefix": " "  # Prefix for token, e.g., "Basic"
                     }
                 }
             }
@@ -159,7 +188,7 @@ def add_gateway_target(gateway_id):
             }
         }
         print("✅ Creating gateway target...")
-        create_target_response = gateway_client.create_gateway_target(
+        create_target_response = GATEWAY_CLIENT.create_gateway_target(
             gatewayIdentifier=gateway_id,
             name="AgentCoreGwyAPIGatewayTarget",
             description="APIGateway Target for Asana and other 3P APIs",
@@ -169,9 +198,12 @@ def add_gateway_target(gateway_id):
 
         print(f"✅ Gateway target created: {create_target_response['targetId']}")
 
-    except Exception as e:
-        print(f"❌ Error creating gateway target: {str(e)}")
+    except (GATEWAY_CLIENT.exceptions.ConflictException,
+            GATEWAY_CLIENT.exceptions.ValidationException,
+            FileNotFoundError, ValueError) as exc:
+        print(f"❌ Error creating gateway target: {str(exc)}")
 
 
-gateway = create_agentcore_gateway()
-add_gateway_target(gateway["id"])
+if __name__ == "__main__":
+    gateway = create_agentcore_gateway()
+    add_gateway_target(gateway["id"])
