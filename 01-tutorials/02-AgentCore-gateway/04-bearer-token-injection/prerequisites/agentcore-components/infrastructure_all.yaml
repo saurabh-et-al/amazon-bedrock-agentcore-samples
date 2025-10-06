@@ -1,0 +1,439 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Comprehensive CloudFormation template for AsanaIntegrationDemo System with Lambda, API Gateway, DynamoDB tables, IAM roles, and SSM parameters"
+
+Parameters:
+  UserPoolName:
+    Type: String
+    Default: "AsanaIntegrationDemoGatewayPool"
+    Description: "Name of the Cognito User Pool"
+
+  MachineAppClientName:
+    Type: String
+    Default: "AsanaIntegrationDemoMachineClient"
+    Description: "Name of the Cognito User Pool Application Client"
+
+  WebAppClientName:
+    Type: String
+    Default: "AsanaIntegrationDemoWebClient"
+    Description: "Name of the Cognito User Pool Web Application Client"
+
+Resources:
+  # ===== API GATEWAY AND LAMBDA SECTION =====
+
+  # Lambda Execution Role for API
+  AsanaIntegrationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AsanaIntegrationLambdaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  # Lambda Function for API
+  AsanaIntegrationApiLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: AgentCoreGwyAsanaIntegrationDemo
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt AsanaIntegrationLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import logging
+          from typing import Dict, Any
+
+          # Configure logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+              """
+              Lambda function handler for Asana Integration Demo
+              
+              Args:
+                  event: API Gateway event
+                  context: Lambda context
+                  
+              Returns:
+                  API Gateway response
+              """
+              try:
+                  # Log the incoming event
+                  logger.info(f"Received event: {json.dumps(event)}")
+                  
+                  # Get HTTP method and path
+                  http_method = event.get('httpMethod', '')
+                  path = event.get('path', '')
+                  
+                  # Route based on method and path
+                  if http_method == 'GET' and path == '/asana':
+                      return handle_get_request(event)
+                  elif http_method == 'POST' and path == '/asana':
+                      return handle_post_request(event)
+                  else:
+                      return create_response(404, {'error': 'Not Found'})
+                      
+              except Exception as e:
+                  logger.error(f"Error processing request: {str(e)}")
+                  return create_response(500, {'error': 'Internal Server Error'})
+
+          def handle_get_request(event: Dict[str, Any]) -> Dict[str, Any]:
+              """Handle GET requests to /asana endpoint"""
+              
+              # Get query parameters
+              query_params = event.get('queryStringParameters') or {}
+              
+              response_data = {
+                  'message': 'AgentCore Asana Integration Demo',
+                  'status': 'active',
+                  'method': 'GET',
+                  'endpoint': '/asana',
+                  'query_params': query_params
+              }
+              
+              return create_response(200, response_data)
+
+          def handle_post_request(event: Dict[str, Any]) -> Dict[str, Any]:
+              """Handle POST requests to /asana endpoint"""
+              
+              try:
+                  # Parse request body
+                  body = event.get('body', '{}')
+                  if isinstance(body, str):
+                      post_data = json.loads(body)
+                  else:
+                      post_data = body
+                      
+                  logger.info(f"POST data received: {json.dumps(post_data)}")
+                  
+                  # Process POST data (placeholder for actual integration logic)
+                  response_data = {
+                      'message': 'POST request processed successfully',
+                      'method': 'POST',
+                      'endpoint': '/asana',
+                      'processed': True,
+                      'received_data': post_data
+                  }
+                  
+                  return create_response(200, response_data)
+                  
+              except json.JSONDecodeError as e:
+                  logger.error(f"Invalid JSON in POST body: {str(e)}")
+                  return create_response(400, {'error': 'Invalid JSON'})
+
+          def create_response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
+              """Create standardized API Gateway response"""
+              
+              return {
+                  'statusCode': status_code,
+                  'headers': {
+                      'Content-Type': 'application/json',
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': 'Content-Type',
+                      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+                  },
+                  'body': json.dumps(body)
+              }
+
+  # API Gateway
+  AsanaIntegrationApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: AsanaIntegrationDemoApi
+      Description: API Gateway for Asana Integration Demo
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Resource
+  AsanaResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AsanaIntegrationApiGateway
+      ParentId: !GetAtt AsanaIntegrationApiGateway.RootResourceId
+      PathPart: asana
+
+  # GET Method
+  AsanaGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AsanaIntegrationApiGateway
+      ResourceId: !Ref AsanaResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AsanaIntegrationApiLambdaFunction.Arn}/invocations"
+
+  # POST Method
+  AsanaPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AsanaIntegrationApiGateway
+      ResourceId: !Ref AsanaResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AsanaIntegrationApiLambdaFunction.Arn}/invocations"
+
+  # Lambda Permission for API Gateway
+  AsanaLambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AsanaIntegrationApiLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AsanaIntegrationApiGateway}/*/GET/asana"
+
+  AsanaLambdaApiGatewayPermissionPost:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AsanaIntegrationApiLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AsanaIntegrationApiGateway}/*/POST/asana"
+
+  # API Gateway Deployment
+  AsanaApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - AsanaGetMethod
+      - AsanaPostMethod
+    Properties:
+      RestApiId: !Ref AsanaIntegrationApiGateway
+      StageName: Prod
+
+  # API Key for AsanaIntegrationApiGateway
+  AsanaIntegrationApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: AsanaIntegrationDemoApiKey
+      Description: API Key for Asana Integration Demo API Gateway
+      Enabled: true
+
+  # Usage Plan for API Key
+  AsanaIntegrationUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: AsanaApiDeployment
+    Properties:
+      UsagePlanName: AsanaIntegrationDemoUsagePlan
+      Description: Usage plan for Asana Integration Demo API
+      ApiStages:
+        - ApiId: !Ref AsanaIntegrationApiGateway
+          Stage: Prod
+      Throttle:
+        RateLimit: 1000
+        BurstLimit: 2000
+      Quota:
+        Limit: 10000
+        Period: DAY
+
+  # Link API Key to Usage Plan
+  AsanaIntegrationUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref AsanaIntegrationApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref AsanaIntegrationUsagePlan
+
+  # ===== AGENTCORE IAM ROLES SECTION =====
+
+  # Gateway AgentCore Role
+  GatewayAgentCoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AsanaIntegrationDemoAgentCoreGatewayRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeRolePolicy
+            Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*
+      Policies:
+        - PolicyName: AsanaIntegrationDemoGatewayAgentCorePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ECRImageAccess
+                Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource:
+                  - !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/bedrock_agentcore-asanaintegrationdemo*
+              - Effect: Allow
+                Action:
+                  - bedrock-agentcore:*
+                Resource:
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*
+              - Sid: ProvisionedThroughputModelInvocation
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: arn:aws:bedrock:*::foundation-model/*
+              - Sid: GetSSMParameters
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:*
+              - Sid: Identity
+                Effect: Allow
+                Action:
+                  - bedrock-agentcore:GetResourceOauth2Token
+                Resource:
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/default/oauth2credentialprovider/*
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/*
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/default
+              - Sid: SecretsManagerAccess
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*
+
+  # Runtime AgentCore Role
+  RuntimeAgentCoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AsanaIntegrationDemoAgentCoreRuntimeRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeRolePolicy
+            Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*
+      Policies:
+        - PolicyName: AsanaIntegrationDemoAgentCoreRuntimePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: LambdaInvoke
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt AsanaIntegrationApiLambdaFunction.Arn
+
+  # ===== SSM PARAMETERS SECTION =====
+  GatewayAgentcoreIAMRoleParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /app/asana/demo/agentcoregwy/gateway_iam_role
+      Type: String
+      Value: !GetAtt GatewayAgentCoreRole.Arn
+      Description: agentcore IAM role to assume
+      Tags:
+        Application: AsanaIntegrationDemo
+
+  RuntimeAgentcoreIAMRoleParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /app/asana/demo/agentcoregwy/runtime_iam_role
+      Type: String
+      Value: !GetAtt RuntimeAgentCoreRole.Arn
+      Description: agentcore IAM role to assume
+      Tags:
+        Application: AsanaIntegrationDemo
+
+  LambdaArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /app/asana/demo/agentcoregwy/lambda_arn
+      Type: String
+      Value: !GetAtt AsanaIntegrationApiLambdaFunction.Arn
+      Description: ARN of the lambda that integrates with agentcore
+      Tags:
+        Application: AsanaIntegrationDemo
+
+  APIGatewayURLParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /app/asana/demo/agentcoregwy/apigateway_url
+      Type: String
+      Value: !Sub "https://${AsanaIntegrationApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+      Description: URL of the API Gateway for 3rd party integration
+      Tags:
+        Application: AsanaIntegrationDemo
+
+  APIKeyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /app/asana/demo/agentcoregwy/api_key
+      Type: String
+      Value: !Ref AsanaIntegrationApiKey
+      Description: API Key for Asana Integration Demo API Gateway
+      Tags:
+        Application: AsanaIntegrationDemo
+
+Outputs:
+  # API Gateway Outputs
+  AsanaIntegrationApiUrl:
+    Description: "API Gateway endpoint URL for Asana Integration function"
+    Value: !Sub "https://${AsanaIntegrationApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+    Export:
+      Name: !Sub "${AWS::StackName}-AsanaIntegrationApiUrl"
+
+  AsanaIntegrationApiLambdaFunctionArn:
+    Description: "Asana Integration Lambda Function ARN"
+    Value: !GetAtt AsanaIntegrationApiLambdaFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-AsanaIntegrationApiLambdaFunctionArn"
+
+  # IAM Role Outputs
+  GatewayAgentCoreRoleArn:
+    Description: "Gateway AgentCore IAM Role ARN"
+    Value: !GetAtt GatewayAgentCoreRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-GatewayAgentCoreRoleArn"
+
+  RuntimeAgentCoreRoleArn:
+    Description: "Runtime AgentCore IAM Role ARN"
+    Value: !GetAtt RuntimeAgentCoreRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RuntimeAgentCoreRoleArn"
+
+  AsanaIntegrationApiKey:
+    Description: "API Key for Asana Integration Demo API Gateway"
+    Value: !Ref AsanaIntegrationApiKey
+    Export:
+      Name: !Sub "${AWS::StackName}-AsanaIntegrationApiKey"
