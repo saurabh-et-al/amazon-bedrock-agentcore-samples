@@ -33,13 +33,28 @@ Resources:
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: !Ref UserPoolName
-      MfaConfiguration: 'OFF'
+      MfaConfiguration: 'OPTIONAL'  # Enable MFA (can be set to 'ON' for mandatory)
       UsernameConfiguration:
         CaseSensitive: false
       UsernameAttributes:
         - email  # <--- Use email as username
       AutoVerifiedAttributes:
         - email  # <--- Auto-verify email if you want to skip confirmation step
+      # Enhanced security configuration
+      UserPoolAddOns:
+        AdvancedSecurityMode: ENFORCED  # Enable advanced security features
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 1
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
       # LambdaConfig:
       #   PostConfirmation: !GetAtt PostSignupFunction.Arn
   
@@ -158,6 +173,8 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: AllowBasicLogs
           PolicyDocument:
@@ -168,44 +185,80 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: arn:aws:logs:*:*:*
-        - PolicyName: Cognito
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/PostSignupFunction*"
+        - PolicyName: CognitoUserPoolAccessPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
                   - cognito-idp:AdminAddUserToGroup
-                Resource: "*"
+                Resource: !GetAtt UserPool.Arn
+
+  # Dead Letter Queue for Lambda function
+  PostSignupFunctionDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: PostSignupFunction-DLQ
+      MessageRetentionPeriod: 1209600  # 14 days
+      KmsMasterKeyId: alias/aws/sqs
 
   PostSignupFunction:
     Type: AWS::Lambda::Function
     Properties:
+      FunctionName: PostSignupFunction
       Handler: index.lambda_handler
       Runtime: python3.13
       Role: !GetAtt PostSignupFunctionRole.Arn
       Timeout: 10
+      MemorySize: 128
+      ReservedConcurrentExecutions: 5  # Limit concurrent executions
+      DeadLetterConfig:
+        TargetArn: !GetAtt PostSignupFunctionDLQ.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
       Code:
         ZipFile: |
           import boto3
+          import json
+          import logging
+          import os
+
+          # Configure logging
+          logger = logging.getLogger()
+          logger.setLevel(os.environ.get('LOG_LEVEL', 'INFO'))
 
           def lambda_handler(event, context):
-              user_pool_id = event['userPoolId']
-              username = event['userName']
-              client = boto3.client('cognito-idp')
-
-              # Add user to 'customer' group
               try:
+                  # Validate event structure
+                  if not event or 'userPoolId' not in event or 'userName' not in event:
+                      logger.error("Invalid event structure")
+                      raise ValueError("Missing required event fields")
+                  
+                  user_pool_id = event['userPoolId']
+                  username = event['userName']
+                  
+                  # Validate inputs
+                  if not user_pool_id or not username:
+                      logger.error("Empty userPoolId or userName")
+                      raise ValueError("userPoolId and userName cannot be empty")
+                  
+                  client = boto3.client('cognito-idp')
+
+                  # Add user to 'Customer' group
                   client.admin_add_user_to_group(
                       UserPoolId=user_pool_id,
                       Username=username,
                       GroupName='Customer'
                   )
-                  print(f"User {username} added to 'customer' group.")
+                  logger.info(f"User {username} added to 'Customer' group successfully")
+                  
+                  return event
+                  
               except Exception as e:
-                  print(f"Error adding user to group: {e}")
-
-              return event
+                  logger.error(f"Error processing signup: {str(e)}")
+                  raise
 
   
   CognitoMachineClientIdParameter:

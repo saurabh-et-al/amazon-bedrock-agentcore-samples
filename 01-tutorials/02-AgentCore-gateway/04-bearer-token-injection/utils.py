@@ -11,6 +11,7 @@ This module provides helper functions for:
 """
 
 import json
+import os
 
 import boto3
 import requests
@@ -20,11 +21,12 @@ STS_CLIENT = boto3.client("sts")
 # Get AWS account details
 REGION = boto3.session.Session().region_name
 
-USERNAME = "testuser"
-SECRET_NAME = "asana_integration_demo_agent"
+# Configuration constants - use environment variables in production
+USERNAME = os.environ.get("DEMO_USERNAME", "testuser")
+SECRET_NAME = os.environ.get("DEMO_SECRET_NAME", "asana_integration_demo_agent")
 
-ROLE_NAME = "AgentCoreGwyAsanaIntegrationRole"
-POLICY_NAME = "AgentCoreGwyAsanaIntegrationPolicy"
+ROLE_NAME = os.environ.get("ROLE_NAME", "AgentCoreGwyAsanaIntegrationRole")
+POLICY_NAME = os.environ.get("POLICY_NAME", "AgentCoreGwyAsanaIntegrationPolicy")
 
 def load_api_spec(file_path: str) -> list:
     """Load API specification from JSON file.
@@ -36,12 +38,34 @@ def load_api_spec(file_path: str) -> list:
         List containing the API specification data
         
     Raises:
-        ValueError: If the JSON file doesn't contain a list
+        ValueError: If the JSON file doesn't contain a list or is invalid
+        FileNotFoundError: If the file doesn't exist
+        json.JSONDecodeError: If the file contains invalid JSON
     """
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    # Validate file path
+    if not file_path or not isinstance(file_path, str):
+        raise ValueError("file_path must be a non-empty string")
+    
+    # Check if file exists and is readable
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"API specification file not found: {file_path}")
+    
+    if not os.access(file_path, os.R_OK):
+        raise PermissionError(f"Cannot read API specification file: {file_path}")
+    
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(f"Invalid JSON in API specification file: {e}", e.doc, e.pos)
+    
     if not isinstance(data, list):
         raise ValueError("Expected a list in the JSON file")
+    
+    # Basic validation of API spec structure
+    if not data:
+        raise ValueError("API specification list cannot be empty")
+    
     return data
 
 def get_ssm_parameter(name: str, with_decryption: bool = True) -> str:
@@ -107,16 +131,47 @@ def fetch_access_token(client_id, client_secret, token_url):
         
     Returns:
         Access token string
+        
+    Raises:
+        ValueError: If required parameters are missing or invalid
+        requests.RequestException: If the HTTP request fails
+        KeyError: If the response doesn't contain an access token
     """
+    # Input validation
+    if not all([client_id, client_secret, token_url]):
+        raise ValueError("client_id, client_secret, and token_url are required")
+    
+    if not token_url.startswith(('https://', 'http://')):
+        raise ValueError("token_url must be a valid HTTP/HTTPS URL")
+    
     data = (f"grant_type=client_credentials&client_id={client_id}"
             f"&client_secret={client_secret}")
-    response = requests.post(
-        token_url,
-        data=data,
-        headers={'Content-Type': 'application/x-www-form-urlencoded'},
-        timeout=30
-    )
-    return response.json()['access_token']
+    
+    try:
+        response = requests.post(
+            token_url,
+            data=data,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            timeout=30,
+            verify=True  # Ensure SSL verification is enabled
+        )
+        response.raise_for_status()  # Raise an exception for bad status codes
+        
+        response_data = response.json()
+        
+        if 'access_token' not in response_data:
+            raise KeyError("Response does not contain 'access_token' field")
+            
+        return response_data['access_token']
+        
+    except requests.exceptions.Timeout:
+        raise requests.RequestException("Request timed out while fetching access token")
+    except requests.exceptions.ConnectionError:
+        raise requests.RequestException("Connection error while fetching access token")
+    except requests.exceptions.HTTPError as e:
+        raise requests.RequestException(f"HTTP error while fetching access token: {e}")
+    except json.JSONDecodeError:
+        raise requests.RequestException("Invalid JSON response from token endpoint")
 
 
 def delete_gateway(gateway_client, gateway_id):

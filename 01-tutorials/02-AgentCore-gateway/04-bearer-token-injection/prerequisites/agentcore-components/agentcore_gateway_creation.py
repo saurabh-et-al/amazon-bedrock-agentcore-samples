@@ -11,7 +11,19 @@ import sys
 
 import boto3
 
-from utils import get_ssm_parameter, put_ssm_parameter
+# Add parent directory to path to import utils
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.join(current_dir, '..', '..')
+sys.path.insert(0, parent_dir)
+
+try:
+    from utils import get_ssm_parameter, put_ssm_parameter
+except ImportError as e:
+    print(f"Error importing utils: {e}")
+    print(f"Current directory: {current_dir}")
+    print(f"Parent directory: {parent_dir}")
+    print(f"Python path: {sys.path}")
+    raise
 
 STS_CLIENT = boto3.client('sts')
 
@@ -32,25 +44,33 @@ def create_agentcore_gateway():
     
     Returns:
         Dictionary containing gateway information (id, name, url, arn)
+        
+    Raises:
+        ValueError: If required SSM parameters are missing
+        Exception: If gateway creation or retrieval fails
     """
-    auth_config = {
-        "customJWTAuthorizer": {
-            "allowedClients": [
-                get_ssm_parameter("/app/asana/demo/agentcoregwy/machine_client_id")
-            ],
-            "discoveryUrl": get_ssm_parameter(
-                "/app/asana/demo/agentcoregwy/cognito_discovery_url"
-            )
-        }
-    }
-
     try:
+        # Validate required SSM parameters exist
+        machine_client_id = get_ssm_parameter("/app/asana/demo/agentcoregwy/machine_client_id")
+        cognito_discovery_url = get_ssm_parameter("/app/asana/demo/agentcoregwy/cognito_discovery_url")
+        gateway_iam_role = get_ssm_parameter("/app/asana/demo/agentcoregwy/gateway_iam_role")
+        
+        if not all([machine_client_id, cognito_discovery_url, gateway_iam_role]):
+            raise ValueError("Required SSM parameters are missing or empty")
+        
+        auth_config = {
+            "customJWTAuthorizer": {
+                "allowedClients": [machine_client_id],
+                "discoveryUrl": cognito_discovery_url
+            }
+        }
+
         # create new gateway
         print(f"Creating gateway in region {REGION} with name: {GATEWAY_NAME}")
 
         create_response = GATEWAY_CLIENT.create_gateway(
             name=GATEWAY_NAME,
-            roleArn=get_ssm_parameter("/app/asana/demo/agentcoregwy/gateway_iam_role"),
+            roleArn=gateway_iam_role,
             protocolType="MCP",
             authorizerType="CUSTOM_JWT",
             authorizerConfiguration=auth_config,
@@ -75,20 +95,32 @@ def create_agentcore_gateway():
             GATEWAY_CLIENT.exceptions.ValidationException) as exc:
         # If gateway exists, collect existing gateway ID from SSM
         print(f"Gateway creation failed: {exc}")
-        existing_gateway_id = get_ssm_parameter("/app/asana/demo/agentcoregwy/gateway_id")
-        print(f"Found existing gateway with ID: {existing_gateway_id}")
+        try:
+            existing_gateway_id = get_ssm_parameter("/app/asana/demo/agentcoregwy/gateway_id")
+            if not existing_gateway_id:
+                raise ValueError("Gateway ID parameter exists but is empty") from exc
+                
+            print(f"Found existing gateway with ID: {existing_gateway_id}")
 
-        # Get existing gateway details
-        gateway_response = GATEWAY_CLIENT.get_gateway(
-            gatewayIdentifier=existing_gateway_id
-        )
-        gateway_info = {
-            "id": existing_gateway_id,
-            "name": gateway_response["name"],
-            "gateway_url": gateway_response["gatewayUrl"],
-            "gateway_arn": gateway_response["gatewayArn"],
-        }
-        return gateway_info
+            # Get existing gateway details
+            gateway_response = GATEWAY_CLIENT.get_gateway(
+                gatewayIdentifier=existing_gateway_id
+            )
+            gateway_info = {
+                "id": existing_gateway_id,
+                "name": gateway_response["name"],
+                "gateway_url": gateway_response["gatewayUrl"],
+                "gateway_arn": gateway_response["gatewayArn"],
+            }
+            return gateway_info
+        except ValueError as ve:
+            raise ve
+        except Exception as e:
+            raise RuntimeError(f"Failed to retrieve existing gateway: {str(e)}") from e
+    except ValueError as ve:
+        raise ve
+    except Exception as e:
+        raise RuntimeError(f"Unexpected error in gateway creation: {str(e)}") from e
 
 def load_api_spec(file_path: str) -> list:
     """Load API specification from JSON file.
@@ -126,9 +158,20 @@ def add_gateway_target(gateway_id):
         api_spec = load_api_spec(api_spec_file)
         print(f"✅ Loaded API specification file: {api_spec}")
 
+        # Validate API spec structure
+        if not api_spec or not isinstance(api_spec[0], dict):
+            raise ValueError("Invalid API specification structure")
+        
+        if "servers" not in api_spec[0] or not api_spec[0]["servers"]:
+            raise ValueError("API specification missing servers configuration")
+
         api_gateway_url = get_ssm_parameter(
             "/app/asana/demo/agentcoregwy/apigateway_url"
         )
+        
+        # Validate API Gateway URL
+        if not api_gateway_url or not api_gateway_url.startswith('https://'):
+            raise ValueError("Invalid API Gateway URL - must be HTTPS")
 
         api_spec[0]["servers"][0]["url"] = api_gateway_url
 
@@ -198,10 +241,21 @@ def add_gateway_target(gateway_id):
 
         print(f"✅ Gateway target created: {create_target_response['targetId']}")
 
-    except (GATEWAY_CLIENT.exceptions.ConflictException,
-            GATEWAY_CLIENT.exceptions.ValidationException,
-            FileNotFoundError, ValueError) as exc:
-        print(f"❌ Error creating gateway target: {str(exc)}")
+    except GATEWAY_CLIENT.exceptions.ConflictException as exc:
+        print(f"❌ Gateway target already exists: {str(exc)}")
+        # Could implement logic to update existing target if needed
+    except GATEWAY_CLIENT.exceptions.ValidationException as exc:
+        print(f"❌ Validation error creating gateway target: {str(exc)}")
+        raise
+    except FileNotFoundError as exc:
+        print(f"❌ API specification file not found: {str(exc)}")
+        raise
+    except ValueError as exc:
+        print(f"❌ Invalid configuration: {str(exc)}")
+        raise
+    except Exception as exc:
+        print(f"❌ Unexpected error creating gateway target: {str(exc)}")
+        raise
 
 
 if __name__ == "__main__":
