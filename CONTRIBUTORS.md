@@ -6,6 +6,7 @@
 - aristsakpinis93
 - aurbac
 - bergjaak
+- crupakheti
 - danystinson
 - dhawalkp
 - didhd
@@ -17,6 +18,7 @@
 - mttanke
 - mvangara10
 - ozhn
+- premaiyer
 - rahullks
 - rameshv29
 - rohillasandeep
@@ -31,6 +33,8 @@
 - erezweinstein5
 - HardikThakkar94
 - brianloyal
+- jagdeep1
+- Sunil Ramachandra
 - Sandeep Raveesh-Babu
 - chintanpatel-ai
 - saurabh-et-al
