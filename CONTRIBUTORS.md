@@ -34,3 +34,9 @@
 - Sandeep Raveesh-Babu
 - chintanpatel-ai
 - saurabh-et-al
+- Evandro Franco
+- greg-aws
+- Frank Dallezotte
+- Omar Elkharbotly
+- Chintan Patel
+- Shreyas Subramanian
