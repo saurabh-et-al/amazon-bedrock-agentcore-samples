@@ -189,9 +189,8 @@ def delete_gateway(gateway_client, gateway_name):
         gateway_client: Boto3 client for bedrock-agentcore-control
         gateway_id: ID of the gateway to delete
     """
-    gateway_id = get_ssm_parameter(
-                "/app/asana/demo/agentcoregwy/gateway_id")
-            
+    gateway_id = get_ssm_parameter("/app/asana/demo/agentcoregwy/gateway_id")
+
     print("Deleting all targets for gateway", gateway_id)
     list_response = gateway_client.list_gateway_targets(
         gatewayIdentifier=gateway_id, maxResults=100
@@ -206,7 +205,7 @@ def delete_gateway(gateway_client, gateway_name):
         gatewayIdentifier=gateway_id, maxResults=100
     )
     if len(list_response["items"]) > 0:
-        print(f"{len(list_response["items"])} targets not deleted successfully)")
+        print(f"{len(list_response['items'])} targets not deleted successfully)")
     else:
         print("All target deleted successfully)")
 
