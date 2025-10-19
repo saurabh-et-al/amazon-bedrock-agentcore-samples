@@ -15,6 +15,7 @@ import os
 
 import boto3
 import requests
+import time
 
 STS_CLIENT = boto3.client("sts")
 
@@ -201,13 +202,16 @@ def delete_gateway(gateway_client, gateway_name):
         gateway_client.delete_gateway_target(
             gatewayIdentifier=gateway_id, targetId=target_id
         )
+    # wait for 30 secs
+    time.sleep(30)
+
     list_response = gateway_client.list_gateway_targets(
         gatewayIdentifier=gateway_id, maxResults=100
     )
     if len(list_response["items"]) > 0:
         print(f"{len(list_response['items'])} targets not deleted successfully)")
     else:
-        print("All target deleted successfully)")
+        print("All targets deleted successfully)")
 
     print("Deleting gateway ", gateway_id)
     gateway_client.delete_gateway(gatewayIdentifier=gateway_id)
