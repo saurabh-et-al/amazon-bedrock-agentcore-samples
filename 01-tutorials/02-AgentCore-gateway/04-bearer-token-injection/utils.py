@@ -182,13 +182,16 @@ def fetch_access_token(client_id, client_secret, token_url):
         raise requests.RequestException("Invalid JSON response from token endpoint")
 
 
-def delete_gateway(gateway_client, gateway_id):
+def delete_gateway(gateway_client, gateway_name):
     """Delete AgentCore gateway and all its targets.
 
     Args:
         gateway_client: Boto3 client for bedrock-agentcore-control
         gateway_id: ID of the gateway to delete
     """
+    gateway_id = get_ssm_parameter(
+                "/app/asana/demo/agentcoregwy/gateway_id")
+            
     print("Deleting all targets for gateway", gateway_id)
     list_response = gateway_client.list_gateway_targets(
         gatewayIdentifier=gateway_id, maxResults=100
@@ -199,5 +202,13 @@ def delete_gateway(gateway_client, gateway_id):
         gateway_client.delete_gateway_target(
             gatewayIdentifier=gateway_id, targetId=target_id
         )
+    list_response = gateway_client.list_gateway_targets(
+        gatewayIdentifier=gateway_id, maxResults=100
+    )
+    if len(list_response["items"]) > 0:
+        print(f"{len(list_response["items"])} targets not deleted successfully)")
+    else:
+        print("All target deleted successfully)")
+
     print("Deleting gateway ", gateway_id)
     gateway_client.delete_gateway(gatewayIdentifier=gateway_id)

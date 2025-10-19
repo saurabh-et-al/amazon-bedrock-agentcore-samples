@@ -80,3 +80,7 @@ cognito_exit_code=$?
 echo "✅ Deployment complete for Cognito stack."
 
 echo "✅ Deployment complete both prerequisite stacks."
+
+# cd ../../
+
+# echo "✅ Back to Bearer token injection home directory."

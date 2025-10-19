@@ -223,12 +223,11 @@ def add_gateway_target(gateway_id):
                 "credentialProviderType": "API_KEY",
                 "credentialProvider": {
                     "apiKeyCredentialProvider": {
-                        # Replace with the api key name expected by the API provider
-                        # For passing token in the header, use "Authorization"
-                        "credentialParameterName": "api_key",
+                        # API key name expected by the API Gateway authorizer
+                        "credentialParameterName": "x-api-key",
                         "providerArn": credential_provider_arn,
-                        # Location of api key. Values: "HEADER" or "QUERY_PARAMETER"
-                        "credentialLocation": "QUERY_PARAMETER",
+                        # Location of api key - must match API Gateway expectation
+                        "credentialLocation": "HEADER",
                         # "credentialPrefix": " "  # Prefix for token, e.g., "Basic"
                     }
                 },

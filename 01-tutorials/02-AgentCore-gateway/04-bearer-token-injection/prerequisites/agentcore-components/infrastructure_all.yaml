@@ -44,12 +44,16 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt AsanaIntegrationLambdaDLQ.Arn
 
   # Dead Letter Queue for Lambda function
   AsanaIntegrationLambdaDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: AsanaIntegrationLambda-DLQ
+      QueueName: !Sub "AsanaIntegrationLambda-DLQ-${AWS::StackName}"
       MessageRetentionPeriod: 1209600 # 14 days
       KmsMasterKeyId: alias/aws/sqs
 
@@ -75,6 +79,7 @@ Resources:
           import os
           import logging
           from typing import Dict, Any
+          from datetime import datetime
 
           # Configure logging
           logger = logging.getLogger()
@@ -143,7 +148,11 @@ Resources:
               
               try:
                   # Parse request body with size validation
+                  headers = event.get('headers', '{}')
+                  logger.info(f"Headers: {headers}")
+
                   body = event.get('body', '{}')
+                  logger.info(f"POST data: {body}")
                   
                   # Validate body size (prevent large payloads)
                   if isinstance(body, str) and len(body) > 1024 * 1024:  # 1MB limit
@@ -185,6 +194,9 @@ Resources:
                       logger.error("Missing X-Asana-Token header")
                       return create_response(401, {'error': 'X-Asana-Token header is required'})
                   
+                  current_datetime = datetime.now()
+                  current_time = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
+
                   # Process POST data (placeholder for actual integration logic)
                   response_data = {
                       'message': 'POST request processed successfully',
@@ -192,7 +204,7 @@ Resources:
                       'endpoint': '/asana',
                       'processed': True,
                       'tool_name': tool_name,
-                      'timestamp': context.aws_request_id if context else 'unknown'
+                      'timestamp': current_time
                   }
                   
                   return create_response(200, response_data)
@@ -243,105 +255,31 @@ Resources:
       ParentId: !GetAtt AsanaIntegrationApiGateway.RootResourceId
       PathPart: asana
 
-  # API Gateway Authorizer
-  AsanaApiAuthorizer:
-    Type: AWS::ApiGateway::Authorizer
-    Properties:
-      Name: AsanaApiKeyAuthorizer
-      Type: REQUEST
-      RestApiId: !Ref AsanaIntegrationApiGateway
-      AuthorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AsanaAuthorizerFunction.Arn}/invocations"
-      AuthorizerCredentials: !GetAtt AsanaAuthorizerRole.Arn
-      IdentitySource: method.request.header.x-api-key
+  # Note: Custom authorizer removed - AgentCore handles authentication
 
-  # Authorizer Lambda Function
-  AsanaAuthorizerFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: AsanaApiAuthorizer
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      Role: !GetAtt AsanaAuthorizerRole.Arn
-      Timeout: 10
-      Code:
-        ZipFile: |
-          import json
-          import os
-
-          def lambda_handler(event, context):
-              try:
-                  # Get the API key from headers
-                  api_key = event.get('headers', {}).get('x-api-key')
-                  
-                  if not api_key:
-                      raise Exception('Unauthorized')
-                  
-                  # In production, validate against stored API keys
-                  # For demo, we'll allow any non-empty key
-                  if len(api_key) < 10:
-                      raise Exception('Unauthorized')
-                  
-                  # Generate policy
-                  policy = {
-                      'principalId': 'api-key-user',
-                      'policyDocument': {
-                          'Version': '2012-10-17',
-                          'Statement': [
-                              {
-                                  'Action': 'execute-api:Invoke',
-                                  'Effect': 'Allow',
-                                  'Resource': event['methodArn']
-                              }
-                          ]
-                      }
-                  }
-                  
-                  return policy
-                  
-              except Exception as e:
-                  raise Exception('Unauthorized')
-
-  # Authorizer Role
-  AsanaAuthorizerRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-                - apigateway.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
-  # GET Method with API Key Authorization
+  # GET Method - No Authorization (AgentCore handles auth)
   AsanaGetMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       RestApiId: !Ref AsanaIntegrationApiGateway
       ResourceId: !Ref AsanaResource
       HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref AsanaApiAuthorizer
-      ApiKeyRequired: true
+      AuthorizationType: NONE
+      ApiKeyRequired: false
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
         Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AsanaIntegrationApiLambdaFunction.Arn}/invocations"
 
-  # POST Method with API Key Authorization
+  # POST Method - No Authorization (AgentCore handles auth)
   AsanaPostMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       RestApiId: !Ref AsanaIntegrationApiGateway
       ResourceId: !Ref AsanaResource
       HttpMethod: POST
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref AsanaApiAuthorizer
-      ApiKeyRequired: true
+      AuthorizationType: NONE
+      ApiKeyRequired: false
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -364,14 +302,7 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AsanaIntegrationApiGateway}/*/POST/asana"
 
-  # Permission for Authorizer Lambda
-  AsanaAuthorizerLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref AsanaAuthorizerFunction
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AsanaIntegrationApiGateway}/authorizers/*"
+  # Note: Authorizer Lambda permission removed - no longer needed
 
   # CloudWatch Log Group for API Gateway Access Logs
   AsanaApiGatewayLogGroup:
@@ -389,24 +320,25 @@ Resources:
     Properties:
       RestApiId: !Ref AsanaIntegrationApiGateway
       StageName: Prod
-      StageDescription: Production stage with access logging
-      AccessLogSetting:
-        DestinationArn: !GetAtt AsanaApiGatewayLogGroup.Arn
-        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","caller":"$context.identity.caller","user":"$context.identity.user","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength"}'
-      MethodSettings:
-        - ResourcePath: "/*"
-          HttpMethod: "*"
-          LoggingLevel: INFO
-          DataTraceEnabled: false
-          MetricsEnabled: true
-          ThrottlingRateLimit: 100
-          ThrottlingBurstLimit: 200
+      StageDescription:
+        Description: Production stage with access logging
+        AccessLogSetting:
+          DestinationArn: !GetAtt AsanaApiGatewayLogGroup.Arn
+          Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","caller":"$context.identity.caller","user":"$context.identity.user","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","protocol":"$context.protocol","responseLength":"$context.responseLength"}'
+        MethodSettings:
+          - ResourcePath: "/*"
+            HttpMethod: "*"
+            LoggingLevel: INFO
+            DataTraceEnabled: false
+            MetricsEnabled: true
+            ThrottlingRateLimit: 100
+            ThrottlingBurstLimit: 200
 
   # API Key for AsanaIntegrationApiGateway
   AsanaIntegrationApiKey:
     Type: AWS::ApiGateway::ApiKey
     Properties:
-      Name: AsanaIntegrationDemoApiKey
+      Name: !Sub "AsanaIntegrationDemoApiKey-${AWS::StackName}"
       Description: API Key for Asana Integration Demo API Gateway
       Enabled: true
 
@@ -493,17 +425,23 @@ Resources:
                 Effect: Allow
                 Action:
                   - bedrock-agentcore:GetResourceOauth2Token
+                  - bedrock-agentcore:GetWorkloadAccessToken
+                  - bedrock-agentcore:GetResourceApiKey
                 Resource:
                   - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/default/oauth2credentialprovider/*
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/default/apikeycredentialprovider/*
                   - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default/workload-identity/*
                   - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default
                   - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/default
+                  - !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:token-vault/*
               - Sid: SecretsManagerAccessPolicy
                 Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
                   - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:asana_integration_demo_agent*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:AgentCoreAPIGatewayAPIKey*
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:bedrock-agentcore*
 
   # Runtime AgentCore Role
   RuntimeAgentCoreRole:
